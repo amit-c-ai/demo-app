@@ -2,12 +2,16 @@ import secrets, os
 from PIL import Image
 from flask import render_template, url_for, flash, redirect, request, abort
 from flask_login.utils import login_required
-from app import app, db, bcrypt
+from app import app, db, bcrypt, mail
 from app.models import User, Post
-from app.forms import RegisterationForm, LoginForm, UpdateAccountForm, PostForm
+from app.forms import RegisterationForm, LoginForm, UpdateAccountForm, PostForm, RequestResetForm, ResetPasswordForm
 from sqlalchemy.orm import backref
 from enum import unique
 from flask_login import login_user, current_user, logout_user, login_required
+from flask_mail import Message
+import smtplib, ssl
+from email.message import EmailMessage
+from email.mime.text import MIMEText
 
 @app.route("/")
 @app.route("/Home")
@@ -49,7 +53,7 @@ def login():
             flash(f'Logged in successfully!', 'success')
             return redirect(next_page) if next_page else redirect(url_for('home'))
         else:
-            flash('Login Unseccesfull. Please check email and password!', 'danger')
+            flash('Login Unsuccessfull. Please check email and password!', 'danger')
 
     return render_template('login.html', title="Login", form=form)
 
@@ -154,3 +158,77 @@ def user_posts(username):
     user = User.query.filter_by(username=username).first_or_404()
     Posts = Post.query.filter_by(author=user).order_by(Post.date_posted.desc()).paginate(page=page, per_page=5)
     return render_template('user_posts.html', Posts=Posts, user=user)
+
+def send_reset_email(user):
+    token = user.get_reset_token()
+    print(token)
+    port = 465  # For SSL
+    smtp_server = "smtp.gmail.com"
+    msg=MIMEText(f'''Visit the following link to reset your password:
+{url_for('reset_token', token=token, _external=True)}
+
+If you didn't make this request then simply ignore this email, no changes will be made.
+''')
+    sender_email = os.environ.get('MAIL_USER')
+    passw = os.environ.get('MAIL_PASS')
+    msg['Subject'] = "Reset Password"
+    msg['From'] = sender_email
+    msg['To'] = user.email
+    context = ssl.create_default_context()
+    print(sender_email)
+    print(passw)
+    print(msg)
+    with smtplib.SMTP_SSL(smtp_server, port, context=context) as server:
+        server.login(sender_email, passw)
+        server.sendmail(sender_email, user.email, msg.as_string())
+
+    print(msg)
+
+"""
+    msg = Message('Password reset request', sender='amitchoudhary9425@gmail.com', recipients=[user.email]) 
+    msg.body = f'''Visit the following link to reset your password:
+{url_for('reset_token', token=token, _external=True)}
+
+If you didn't make this request then simply ignore this email, no changes will be made.
+'''
+    print("mail sent")
+    print("url: ", url_for('reset_token', token=token, _external=True))
+    print(os.environ.get('MAIL_USER'))
+    print(os.environ.get('MAIL_PASS'))
+    mail.send(msg)
+    print("send command done")
+    return 'Sent'
+"""
+
+@app.route('/reset_password', methods=['GET', 'POST'])
+def reset_request():
+    if current_user.is_authenticated:
+        return redirect(url_for('home'))
+    form = RequestResetForm()
+    if form.validate_on_submit():
+        user = User.query.filter_by(email=form.email.data).first()
+        send_reset_email(user)
+        print("flashed")
+        flash('An email has been sent to the registered email!', 'info')
+        return redirect(url_for('login'))
+    return render_template('reset_request.html', title='Reset Password', form=form)
+
+@app.route('/reset_password/<token>', methods=['GET', 'POST'])
+def reset_token(token):
+    if current_user.is_authenticated:
+        return redirect(url_for('home'))
+    
+    user = User.verify_reset_token(token)
+    if user is None:
+        flash('Invalid or expired token!', 'warning')
+        return redirect(url_for('reset_password'))
+
+    form = ResetPasswordForm()
+    if form.validate_on_submit():
+        hashed_password = bcrypt.generate_password_hash(form.password.data).decode('utf-8')
+        user.password = hashed_password
+        db.session.commit()
+        flash(f'Password reset successfully!', 'success')
+        return redirect(url_for('login'))
+    return render_template('reset_token.html', title='Reset Password', form=form)
+    
